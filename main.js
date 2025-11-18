@@ -2,12 +2,25 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Pane } from 'tweakpane';
 
+import { buildBanitsa } from './banitsa/banitsaBuilder.js';
+import { makeTopMaterial, makeSideMaterial } from './banitsa/materials.js';
+import { makeBanitsaTextures, makeFillingTexture } from './textures/banitsaTexture.js';
+import { makeTableTexture } from './textures/tableTexture.js';
+import { createSteamSystem } from './effects/steamSystem.js';
+
 // --- Configuration ---
 const CONFIG = {
   slices: 8,
-  radius: 5,
+  radius: 6,
   height: 0.8,
-  coinPosition: 0, // 0-indexed
+  gapDeg: 1.0,
+  edgeDip: 0.2,
+  wobbleAmp: 0.05,
+  coinPosition: 0,
+  table: {
+    color1: '#f0f0f0',
+    color2: '#c0392b'
+  },
   fortunes: [
     "Health (Здраве)",
     "Love (Любов)",
@@ -21,7 +34,11 @@ const CONFIG = {
     "Good Friends (Добри приятели)",
     "Wisdom (Мъдрост)",
     "Lazy Year (Мързелива година)"
-  ]
+  ],
+  steam: {
+    enabled: true,
+    density: 150
+  }
 };
 
 // Ensure fortune list size matches max slices for UI stability
@@ -40,6 +57,12 @@ camera.lookAt(0, 0, 0);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// Modern three.js color management
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
 document.body.appendChild(renderer.domElement);
 
 // Controls
@@ -47,82 +70,168 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 
 // Lights
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
 scene.add(ambientLight);
 
-const dirLight = new THREE.DirectionalLight(0xffd700, 0.8); // Golden light
+// Key Light (warm sun)
+const dirLight = new THREE.DirectionalLight(0xffd7a0, 2.0);
 dirLight.position.set(5, 10, 5);
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.width = 2048;
+dirLight.shadow.mapSize.height = 2048;
+dirLight.shadow.camera.near = 0.5;
+dirLight.shadow.camera.far = 50;
+dirLight.shadow.camera.left = -10;
+dirLight.shadow.camera.right = 10;
+dirLight.shadow.camera.top = 10;
+dirLight.shadow.camera.bottom = -10;
+dirLight.shadow.bias = -0.001;
 scene.add(dirLight);
+
+// Fill Light (warm ambient)
+const hemiLight = new THREE.HemisphereLight(0xfff2d5, 0x3b2b1a, 0.5);
+scene.add(hemiLight);
+
+// Rim Light (backlight for contour)
+const spotLight = new THREE.SpotLight(0xffc57a, 1.0);
+spotLight.position.set(-5, 5, -5);
+spotLight.lookAt(0,0,0);
+spotLight.penumbra = 0.5;
+spotLight.castShadow = true;
+scene.add(spotLight);
+
+// Floor for shadows
+// Replaced by Table below
+// const floorGeo = new THREE.PlaneGeometry(50, 50);
+// ...
+
+// --- Table Setup ---
+const tableGeo = new THREE.CylinderGeometry(10, 10, 0.5, 64);
+// Initial texture
+const tableTex = makeTableTexture(CONFIG.table.color1, CONFIG.table.color2);
+const tableMat = new THREE.MeshStandardMaterial({ 
+  map: tableTex,
+  color: 0xffffff,
+  roughness: 0.8,
+  metalness: 0.0
+});
+const table = new THREE.Mesh(tableGeo, tableMat);
+table.position.y = -0.26; // Just below banitsa (banitsa sits at 0, has height but usually bottom is 0? builder rotates it to sit flat at 0?)
+// Banitsa builder uses extrude. Rotate -90X.
+// Usually center of extrude is 0,0,0.
+// If we rotated around X, the Y extent is 0 to -height? No.
+// Extrude along Z. Range 0 to height.
+// Rotate X -90. Z becomes Y. Range 0 to height.
+// So bottom is Y=0. Top is Y=height.
+// Table top should be at Y=0.
+// Cylinder center is at 0,0,0. Height 0.5. Top is at +0.25.
+// So table position y = -0.25.
+table.position.y = -0.25;
+table.receiveShadow = true;
+scene.add(table);
 
 // --- Banitsa Object ---
 const banitsaGroup = new THREE.Group();
 scene.add(banitsaGroup);
 
-// Materials
-// Texture simulation: procedural texture or just noise. Let's use a rough noisy material.
-const crustMaterial = new THREE.MeshStandardMaterial({ 
-  color: 0xeebb66, // Doughy color
-  roughness: 0.8,
-  metalness: 0.1,
-  bumpScale: 0.02
-});
+// --- Banitsa Resources ---
+const textureLoader = new THREE.TextureLoader();
 
-// Top surface material - simpler to simulate the "baked sheets" look with color and bump
-const topMaterial = new THREE.MeshStandardMaterial({
-  color: 0xd4a017, // Golden baked
-  roughness: 0.9,
-  metalness: 0.0
-});
+// Load Top Texture
+// Supports .png with transparency
+const banitsaPhotoTexture = textureLoader.load(
+  '/banitsa.png', 
+  (tex) => {
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.flipY = false; 
+    if (topMat) {
+      topMat.map = tex;
+      topMat.transparent = true; 
+      topMat.alphaTest = 0.5;
+      topMat.side = THREE.DoubleSide; 
+      topMat.color.setHex(0xffffff);
+      topMat.needsUpdate = true;
+    }
+    // Reuse for sides/filling as requested
+    if (sideMat) {
+      sideMat.map = tex;
+      // Force sides to be opaque so they cover the surface
+      // We rely on UV mapping to hit non-transparent pixels, or fallback to color
+      sideMat.transparent = false; 
+      sideMat.alphaTest = 0; // Disable cutout
+      sideMat.side = THREE.DoubleSide;
+      sideMat.color.setHex(0xffffff);
+      sideMat.needsUpdate = true;
+    }
+  },
+  undefined,
+  () => {
+    // Fallback to jpg if png not found
+    console.log('banitsa.png not found, trying banitsa.jpg...');
+    textureLoader.load('/banitsa.jpg', (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.flipY = false;
+        if (topMat) {
+            topMat.map = tex;
+            topMat.transparent = false;
+            topMat.color.setHex(0xffffff);
+            topMat.needsUpdate = true;
+        }
+        if (sideMat) {
+            sideMat.map = tex;
+            sideMat.transparent = false;
+            sideMat.color.setHex(0xffffff);
+            sideMat.needsUpdate = true;
+        }
+    });
+  }
+);
+
+// Load Filling Texture - REMOVED to use same texture as top
+/* 
+const fillingPhotoTexture = textureLoader.load( ... );
+*/
+
+// Generate procedural textures as fallback/initial
+let banitsaTextures = makeBanitsaTextures();
+let fillingTextures = makeFillingTexture();
+
+let topMat = makeTopMaterial(banitsaTextures);
+let sideMat = makeSideMaterial(fillingTextures);
+
+// Steam
+let steamSystem = createSteamSystem({ count: CONFIG.steam.density });
+scene.add(steamSystem);
 
 function createBanitsa() {
   // Clear existing
   while(banitsaGroup.children.length > 0){ 
-    banitsaGroup.remove(banitsaGroup.children[0]); 
+    const child = banitsaGroup.children[0];
+    if (child.geometry) child.geometry.dispose();
+    // Don't dispose global materials here, reusing them
+    banitsaGroup.remove(child); 
   }
 
-  const anglePerSlice = (Math.PI * 2) / CONFIG.slices;
-  
-  for (let i = 0; i < CONFIG.slices; i++) {
-    // Create a slice using Shape and ExtrudeGeometry for better control than Cylinder
-    const shape = new THREE.Shape();
-    shape.moveTo(0, 0);
-    shape.arc(0, 0, CONFIG.radius, i * anglePerSlice, (i + 1) * anglePerSlice, false);
-    shape.lineTo(0, 0);
-    
-    const extrudeSettings = {
-      steps: 1,
-      depth: CONFIG.height,
-      bevelEnabled: true,
-      bevelThickness: 0.1,
-      bevelSize: 0.1,
-      bevelSegments: 2
-    };
-    
-    const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-    // Rotate to lay flat
-    geometry.rotateX(-Math.PI / 2);
-    
-    const sliceMesh = new THREE.Mesh(geometry, [topMaterial, crustMaterial]);
-    
-    // Store data in user data
-    // Use the fortune from the config index directly (or we could shuffle, but "configurable placement" implies mapping index to fortune)
-    // To support "where I put what", we map Slice 0 -> Fortune 0, etc.
-    sliceMesh.userData = {
-      id: i,
-      fortune: CONFIG.fortunes[i],
-      hasCoin: (i === CONFIG.coinPosition),
-      originalY: 0
-    };
-    
-    // Add a slight gap between slices for visual separation
-    // Calculate center angle of the slice
-    const midAngle = (i * anglePerSlice) + (anglePerSlice / 2);
-    // Move slightly outward
-    const gap = 0.1;
-    sliceMesh.position.x = Math.cos(midAngle) * gap;
-    sliceMesh.position.z = Math.sin(midAngle) * gap;
+  const newGroup = buildBanitsa({
+    sliceCount: CONFIG.slices,
+    radius: CONFIG.radius,
+    height: CONFIG.height,
+    gapDeg: CONFIG.gapDeg,
+    edgeDip: CONFIG.edgeDip,
+    wobbleAmp: CONFIG.wobbleAmp,
+    topMaterial: topMat,
+    sideMaterial: sideMat,
+    fortunes: CONFIG.fortunes,
+    coinIndex: CONFIG.coinPosition
+  });
 
-    banitsaGroup.add(sliceMesh);
+  // Move children from newGroup to banitsaGroup to keep reference clean
+  // or just add the group itself? 
+  // Our click handler uses banitsaGroup.children.
+  // Let's just add the meshes.
+  while (newGroup.children.length > 0) {
+    const mesh = newGroup.children[0];
+    banitsaGroup.add(mesh);
   }
 }
 
@@ -156,9 +265,30 @@ function updateCoinInput() {
 }
 updateCoinInput();
 
-const fortunesFolder = pane.addFolder({ title: 'Fortunes (per Slice)', expanded: false });
+
+// Add visual toggles
+const visualFolder = pane.addFolder({ title: 'Visuals' });
+visualFolder.addBinding(CONFIG, 'radius', { min: 2, max: 8, label: 'Radius' }).on('change', createBanitsa);
+visualFolder.addBinding(CONFIG, 'height', { min: 0.2, max: 2, label: 'Thickness' }).on('change', createBanitsa);
+visualFolder.addBinding(CONFIG, 'gapDeg', { min: 0, max: 5, label: 'Slice Gap' }).on('change', createBanitsa);
+visualFolder.addBinding(CONFIG, 'edgeDip', { min: 0, max: 0.5, label: 'Edge Dip' }).on('change', createBanitsa);
+visualFolder.addBinding(CONFIG.steam, 'enabled', { label: 'Steam' }).on('change', (ev) => {
+  steamSystem.visible = ev.value;
+});
+
+const tableFolder = pane.addFolder({ title: 'Table Colors' });
+tableFolder.addBinding(CONFIG.table, 'color1', { label: 'Base' }).on('change', updateTable);
+tableFolder.addBinding(CONFIG.table, 'color2', { label: 'Checkers' }).on('change', updateTable);
+
+function updateTable() {
+  const newTex = makeTableTexture(CONFIG.table.color1, CONFIG.table.color2);
+  tableMat.map.dispose();
+  tableMat.map = newTex;
+  tableMat.needsUpdate = true;
+}
 
 // Create inputs for each potential slice
+const fortunesFolder = pane.addFolder({ title: 'Fortunes (per Slice)', expanded: false });
 const fortuneBindings = [];
 function refreshFortuneBindings() {
   fortuneBindings.forEach(b => b.dispose());
@@ -189,7 +319,28 @@ const mouse = new THREE.Vector2();
 let isSpinning = false;
 let spinVelocity = 0;
 
-function onMouseClick(event) {
+// Click vs Drag Detection
+let isDragging = false;
+let mouseDownPos = new THREE.Vector2();
+
+window.addEventListener('pointerdown', (event) => {
+  mouseDownPos.x = event.clientX;
+  mouseDownPos.y = event.clientY;
+  isDragging = false;
+});
+
+window.addEventListener('pointermove', (event) => {
+  // If mouse moves significantly while down, mark as drag
+  const dx = event.clientX - mouseDownPos.x;
+  const dy = event.clientY - mouseDownPos.y;
+  if (Math.sqrt(dx*dx + dy*dy) > 5) {
+    isDragging = true;
+  }
+});
+
+window.addEventListener('pointerup', (event) => {
+  // Only process click if it wasn't a drag operation
+  if (isDragging) return;
   if (isSpinning) return; // Can't pick while spinning
 
   // Calculate mouse position in normalized device coordinates (-1 to +1) for both components
@@ -203,9 +354,10 @@ function onMouseClick(event) {
     const selectedSlice = intersects[0].object;
     revealFortune(selectedSlice);
   }
-}
+});
 
-window.addEventListener('click', onMouseClick);
+// Removed old 'click' listener to avoid duplication
+// window.addEventListener('click', onMouseClick);
 
 // --- Logic ---
 const fortuneDisplay = document.getElementById('fortune-display');
@@ -226,14 +378,48 @@ function revealFortune(slice) {
   fortuneDisplay.innerHTML = html;
   fortuneDisplay.classList.remove('hidden');
   
-  // Animate slice up
+  // Animate slice up and remove
   // Reset others
   banitsaGroup.children.forEach(child => {
-    child.position.y = 0;
-    if (child === slice) {
-      child.position.y = 1; // Pop up
+    if (child !== slice) {
+      child.position.y = 0;
     }
   });
+
+  // Animation logic for the selected slice
+  // We can use a simple TWEEN or just update loop logic.
+  // For simplicity, let's attach an animation function to the slice
+  const startY = slice.position.y;
+  const targetY = 4.0; // Lift higher
+  const startTime = Date.now();
+  const duration = 1200; // ms
+
+  slice.userData.isAnimating = true;
+  slice.userData.animate = () => {
+    const now = Date.now();
+    const progress = Math.min((now - startTime) / duration, 1);
+    
+    // Ease out cubic
+    const ease = 1 - Math.pow(1 - progress, 3);
+    
+    // Vertical Lift
+    slice.position.y = startY + (targetY - startY) * ease;
+    
+    // Gentle Spin/Tilt (Reduced to avoid clipping through table)
+    // Only tilt slightly after it has lifted off the ground
+    if (progress > 0.2) {
+      const spinProgress = (progress - 0.2) / 0.8;
+      slice.rotation.y -= 0.02 * spinProgress; 
+      slice.rotation.x -= 0.01 * spinProgress; 
+    }
+
+    if (progress >= 1) {
+      // Remove
+      banitsaGroup.remove(slice);
+      // Optional: dispose geometry if we want to be clean
+      if (slice.geometry) slice.geometry.dispose();
+    }
+  };
 }
 
 // --- Spin Logic ---
@@ -251,15 +437,21 @@ document.getElementById('reset-btn').addEventListener('click', () => {
   isSpinning = false;
   spinVelocity = 0;
   fortuneDisplay.classList.add('hidden');
-  banitsaGroup.children.forEach(c => c.position.y = 0);
+  
+  // Recreate the banitsa to bring back removed slices
+  createBanitsa();
+  
   banitsaGroup.rotation.y = 0;
-  // We do not scramble config here as the user configured it
 });
 
 
 // --- Animation Loop ---
+const clock = new THREE.Clock();
+
 function animate() {
   requestAnimationFrame(animate);
+  
+  const dt = clock.getDelta();
 
   if (isSpinning) {
     banitsaGroup.rotation.y += spinVelocity;
@@ -268,6 +460,20 @@ function animate() {
     if (spinVelocity < 0.001) {
       isSpinning = false;
       spinVelocity = 0;
+    }
+  }
+
+  // Animate Steam
+  if (CONFIG.steam.enabled && steamSystem.userData.update) {
+    steamSystem.userData.update(dt);
+  }
+
+  // Animate Removing Slices
+  // Iterate backwards to safely remove
+  for (let i = banitsaGroup.children.length - 1; i >= 0; i--) {
+    const child = banitsaGroup.children[i];
+    if (child.userData.isAnimating && child.userData.animate) {
+      child.userData.animate();
     }
   }
 
