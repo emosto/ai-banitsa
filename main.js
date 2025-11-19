@@ -147,7 +147,7 @@ let sideMat = makeSideMaterial(fillingTextures);
 // Load Top Texture
 // Supports .png with transparency
 const banitsaPhotoTexture = textureLoader.load(
-  '/banitsa.png', 
+  import.meta.env.BASE_URL + 'banitsa.png', 
   (tex) => {
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.flipY = false; 
@@ -164,7 +164,7 @@ const banitsaPhotoTexture = textureLoader.load(
   () => {
     // Fallback to jpg if png not found
     console.log('banitsa.png not found, trying banitsa.jpg...');
-    textureLoader.load('/banitsa.jpg', (tex) => {
+    textureLoader.load(import.meta.env.BASE_URL + 'banitsa.jpg', (tex) => {
         tex.colorSpace = THREE.SRGBColorSpace;
         tex.flipY = false;
         if (topMat) {
@@ -179,7 +179,7 @@ const banitsaPhotoTexture = textureLoader.load(
 
 // Load Side Texture (banitsa-side.png)
 const sidePhotoTexture = textureLoader.load(
-  '/banitsa-side.png?v=' + Date.now(), // Cache bust
+  import.meta.env.BASE_URL + 'banitsa-side.png?v=' + Date.now(), // Cache bust
   (tex) => {
     console.log('Side texture loaded successfully!');
     tex.colorSpace = THREE.SRGBColorSpace;
