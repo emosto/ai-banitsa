@@ -129,21 +129,29 @@ export function buildBanitsa({
         
         uvAttribute.setXY(v, u, vCoord); 
       } else {
-        // Side Vertex
-        // PROJECT Top Texture Down:
+        // Side Vertex - Simple tiling approach with scaling
+        // V = height (0 at bottom, increases upward)
+        // U = distance along perimeter or cut surface
         
-        const sliceRotation = -(i * anglePerSlice + gapRad/2);
-        const cos = Math.cos(sliceRotation);
-        const sin = Math.sin(sliceRotation);
+        // Scale factors to stretch the texture (lower = more stretch, less tiling)
+        const uScale = 0.3;
+        const vScale = 1.5;
         
-        const gx = worldVertex.x * cos - worldVertex.y * sin;
-        const gy = worldVertex.x * sin + worldVertex.y * cos;
+        const vCoord = (worldVertex.z / height) * vScale;
         
-        // Use same safe scale
-        const mapRadius = radius * 1.1;
+        const d = Math.sqrt(worldVertex.x*worldVertex.x + worldVertex.y*worldVertex.y);
+        let u = 0;
         
-        const u = (gx / (2 * mapRadius)) + 0.5;
-        const vCoord = (gy / (2 * mapRadius)) + 0.5;
+        if (Math.abs(d - radius) < 0.1) {
+           // Outer Rim - use arc length along the curved edge
+           const localAngle = Math.atan2(worldVertex.y, worldVertex.x);
+           // Arc length from start of slice (angle 0) to this point
+           u = localAngle * radius * uScale;
+        } else {
+           // Inner Cut surfaces (two straight edges)
+           // Use radial distance from center
+           u = d * uScale;
+        }
         
         uvAttribute.setXY(v, u, vCoord);
       }

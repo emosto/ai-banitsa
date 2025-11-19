@@ -137,6 +137,13 @@ scene.add(banitsaGroup);
 // --- Banitsa Resources ---
 const textureLoader = new THREE.TextureLoader();
 
+// Generate procedural textures as fallback/initial
+let banitsaTextures = makeBanitsaTextures();
+let fillingTextures = makeFillingTexture();
+
+let topMat = makeTopMaterial(banitsaTextures);
+let sideMat = makeSideMaterial(fillingTextures);
+
 // Load Top Texture
 // Supports .png with transparency
 const banitsaPhotoTexture = textureLoader.load(
@@ -152,17 +159,6 @@ const banitsaPhotoTexture = textureLoader.load(
       topMat.color.setHex(0xffffff);
       topMat.needsUpdate = true;
     }
-    // Reuse for sides/filling as requested
-    if (sideMat) {
-      sideMat.map = tex;
-      // Force sides to be opaque so they cover the surface
-      // We rely on UV mapping to hit non-transparent pixels, or fallback to color
-      sideMat.transparent = false; 
-      sideMat.alphaTest = 0; // Disable cutout
-      sideMat.side = THREE.DoubleSide;
-      sideMat.color.setHex(0xffffff);
-      sideMat.needsUpdate = true;
-    }
   },
   undefined,
   () => {
@@ -177,39 +173,38 @@ const banitsaPhotoTexture = textureLoader.load(
             topMat.color.setHex(0xffffff);
             topMat.needsUpdate = true;
         }
-        if (sideMat) {
-            sideMat.map = tex;
-            sideMat.transparent = false;
-            sideMat.color.setHex(0xffffff);
-            sideMat.needsUpdate = true;
-        }
     });
   }
 );
 
-// Load Filling Texture - REMOVED to use same texture as top
-/* 
-const fillingPhotoTexture = textureLoader.load( ... );
-*/
+// Load Side Texture (banitsa-side.png)
+const sidePhotoTexture = textureLoader.load(
+  '/banitsa-side.png?v=' + Date.now(), // Cache bust
+  (tex) => {
+    console.log('Side texture loaded successfully!');
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    if (sideMat) {
+      sideMat.map = tex;
+      sideMat.transparent = false; 
+      sideMat.alphaTest = 0;
+      sideMat.side = THREE.DoubleSide;
+      sideMat.color.setHex(0xffffff);
+      sideMat.needsUpdate = true;
+    }
+  },
+  undefined,
+  (err) => {
+    console.error('Error loading banitsa-side.png:', err);
+  }
+);
 
-// Generate procedural textures as fallback/initial
-let banitsaTextures = makeBanitsaTextures();
-let fillingTextures = makeFillingTexture();
-
-let topMat = makeTopMaterial(banitsaTextures);
-let sideMat = makeSideMaterial(fillingTextures);
-
-// Steam
-let steamSystem = createSteamSystem({ count: CONFIG.steam.density });
-scene.add(steamSystem);
-
+// --- Create Banitsa Function ---
 function createBanitsa() {
-  // Clear existing
-  while(banitsaGroup.children.length > 0){ 
-    const child = banitsaGroup.children[0];
-    if (child.geometry) child.geometry.dispose();
-    // Don't dispose global materials here, reusing them
-    banitsaGroup.remove(child); 
+  // Clear previous slices
+  while (banitsaGroup.children.length > 0) {
+    banitsaGroup.remove(banitsaGroup.children[0]);
   }
 
   const newGroup = buildBanitsa({
@@ -236,6 +231,12 @@ function createBanitsa() {
 }
 
 createBanitsa();
+
+// --- Steam Effect ---
+const steamSystem = createSteamSystem(CONFIG.steam.density);
+steamSystem.position.y = 0.5; // Above banitsa
+steamSystem.visible = CONFIG.steam.enabled;
+scene.add(steamSystem);
 
 // --- GUI Setup ---
 const pane = new Pane({ title: 'Banitsa Config' });
